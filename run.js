@@ -1,6 +1,16 @@
 const fs = require('fs');
 const path = require('path');
-const puppeteer = require('puppeteer-core');
+let puppeteer;
+try {
+  const puppeteerExtra = require('puppeteer-extra');
+  const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+  puppeteerExtra.use(StealthPlugin());
+  puppeteer = puppeteerExtra;
+} catch (e) {
+  try {
+    puppeteer = require('puppeteer-core');
+  } catch (err) {}
+}
 
 const findChromePath = () => {
   if (process.env.PUPPETEER_EXECUTABLE_PATH && fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
@@ -178,13 +188,29 @@ const recoverCloudflareSession = async (page) => {
 
       console.log(`  ⏳ Waiting for Cloudflare verification (${attempt}/${maxWaitSeconds}s)...`);
 
-      // Attempt to locate Turnstile iframe / checkbox and click
+      // 1. Check all iframes on main page for Cloudflare Turnstile box
+      const iframes = await page.$$('iframe');
+      for (const iframe of iframes) {
+        try {
+          const src = await page.evaluate(el => el.src || el.getAttribute('src') || '', iframe);
+          if (src.includes('cloudflare') || src.includes('turnstile') || src.includes('challenge')) {
+            const box = await iframe.boundingBox();
+            if (box && box.width > 0 && box.height > 0) {
+              console.log(`  🔘 Found Cloudflare Turnstile widget! Clicking checkbox...`);
+              await page.mouse.click(box.x + 35, box.y + (box.height / 2));
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          }
+        } catch (e) {}
+      }
+
+      // 2. Check inner frame elements
       const frames = page.frames();
       for (const frame of frames) {
         try {
-          const checkbox = await frame.$('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage, .mark, iframe[src*="cloudflare"]');
+          const checkbox = await frame.$('input[type="checkbox"], .ctp-checkbox-label, #challenge-stage, .mark');
           if (checkbox) {
-            console.log(`  🔘 Found Cloudflare Turnstile checkbox! Attempting click...`);
+            console.log(`  🔘 Found Turnstile checkbox inside frame! Clicking...`);
             const box = await checkbox.boundingBox();
             if (box) {
               await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
@@ -214,6 +240,17 @@ const recoverCloudflareSession = async (page) => {
 // 3. MAIN AUTOMATION RUNNER
 // ==========================================
 (async function main() {
+  if (!puppeteer || !puppeteer.launch) {
+    try {
+      const pExtra = (await import('puppeteer-extra')).default || (await import('puppeteer-extra'));
+      const sPlugin = (await import('puppeteer-extra-plugin-stealth')).default || (await import('puppeteer-extra-plugin-stealth'));
+      pExtra.use(sPlugin());
+      puppeteer = pExtra;
+    } catch (e) {
+      const pMod = await import('puppeteer-core');
+      puppeteer = pMod.default || pMod;
+    }
+  }
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║       BPS Indonesia Trade Data 1-Click Automation            ║');
   console.log('║               (Import & Export Extractor)                    ║');
